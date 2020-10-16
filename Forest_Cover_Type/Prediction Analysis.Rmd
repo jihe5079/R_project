@@ -1,0 +1,245 @@
+---
+title: "STST5003 - Final"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(ggplot2)
+```
+
+
+```{r}
+# Data prepocessing
+data <- read.csv("covtype.csv", header = F)
+names(data) <- c("Elevation", "Aspect", "Slope", "Horizontal_Distance_To_Hydrology", "Vertical_Distance_To_Hydrology", "Horizontal_Distance_To_Roadways", "Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm", "Horizontal_Distance_To_Fire_Points", "Rawah", "Neota", "Comanche Peak", "Cache la Poudre", "2702", "2703", "2704", "2705", "2706", "2717", "3501", "3502", "4201", "4703", "4704", "4744", "4758", "5101", "5151", "6101", "6102", "6731", "7101", "7102", "7103", "7201", "7202", "7700", "7701", "7702", "7709", "7710", "7745", "7746", "7755", "7756", "7757", "7790", "8703", "8707", "8708", "8771", "8772", "8776", "Cover_Type")
+
+data$Cover_Type <- as.factor(data$Cover_Type)
+```
+
+
+```{r}
+### Data split
+seed = 100
+set.seed(seed) 
+inTrain <- createDataPartition(data$Cover_Type, p = .7)[[1]] 
+
+data_train <- data[ inTrain, ]
+x_train = data_train[,1:54]
+y_train = data_train[,55]
+
+data_test <- data[-inTrain, ]
+x_test = data_test[,1:54]
+y_test = data_test[,55]
+```
+
+```{r}
+# Doing Feature scaling for some classifier
+x_train_scal = scale(x_train)
+x_test_scal = scale(x_test)
+```
+
+```{r}
+# Use multi-core to accerate training processing and save time, some classifier (random forest) may not work for this setting
+library(doParallel)
+cl <- makePSOCKcluster(4) # Use 4-core
+registerDoParallel(cl)
+```
+
+
+### LDA
+```{r}
+set.seed(100)
+
+start_time <- Sys.time()
+
+lda <- train(x = x_train,
+             y = y_train,
+             method = "lda",
+             trControl = trainControl(method = "repeatedcv", repeats = 5))
+end_time <- Sys.time()
+end_time - start_time
+lda
+# Acc 67.9% and take 4.386146 mins
+```
+
+```{r}
+lda_pred = predict(lda, newdata = x_test)
+confusionMatrix(lda_pred, y_test)
+# Overall Acc = 68%
+```
+
+
+
+### Decision Tree
+#### Using gini
+```{r}
+set.seed(100)
+
+start_time <- Sys.time()
+tree_gini <- train(x = x_train,
+                   y = y_train,
+                   method = "rpart",
+                   tuneLength = 15,
+                   trControl = trainControl(method = "repeatedcv", repeats = 5))
+end_time <- Sys.time()
+end_time - start_time
+tree_gini
+```
+
+#### The plot of decision tree with gini
+```{r}
+plot(tree_gini$finalModel, uniform=TRUE, main="Decision Tree (gini)")
+text(tree_gini$finalModel, use.n.=TRUE, all=TRUE, cex=0.6)
+# root node = Elevation >= 3044
+```
+
+```{r}
+# another style of decision tree plot for gini
+rpart.plot(tree_gini$finalModel, main="Decision tree plot (gini)", cex = 0.3)
+```
+
+#### Using Cross-entropy
+```{r}
+set.seed(100)
+
+start_time <- Sys.time()
+tree_info <- train(x = x_train,
+                   y = y_train,
+                   method = "rpart",
+                   tuneLength = 15,
+                   parms=list(split="information"),
+                   trControl = trainControl(method = "repeatedcv", repeats = 5))
+end_time <- Sys.time()
+end_time - start_time
+tree_info
+```
+
+
+
+```{r}
+plot(tree_info$finalModel, uniform=TRUE, main="Decision Tree (cross-entropy)")
+text(tree_info$finalModel, use.n.=TRUE, all=TRUE, cex=0.6)
+# root node = Elevation >= 2704
+```
+
+```{r}
+# another style of decision tree plot for cross-entropy
+rpart.plot(tree_info$finalModel, main="Decision tree plot (gini)", cex=.3)
+```
+
+```{r}
+df <- data.frame(loss=rep(c("gini", "cross-entropy"), each=15),
+                 cp=rep(c(0.001143959,0.001151637,0.001290793,0.001355573,0.001372367,0.001405957,0.001512483,0.001641083,0.001753847,0.002432833,0.002530402,0.006294016,0.007442454,0.071809366,0.284641481),2),
+                 accuracy=c(0.7292080,0.7290615,0.7270724,0.7254899,0.7249559,0.7243117,0.7203973,0.7147948,0.7129985,0.7073507,0.7057505,0.6915271,0.6765076,0.6508525,0.5776319,0.7306371,0.7305043,0.7273463,0.7250803,0.7248703,0.7241838,0.7198845,0.7122894,0.7091525,0.7034541,0.7028256,0.6792663,0.6705491,0.6455179,0.4875980))
+
+df
+```
+
+The best accuracy is 73.06% with cross-entropy and cp = 0.00114.
+We choose the decision tree with cross-entropy and cp = 0.00114 as our final decision tree model.
+
+
+```{r}
+# The line plot of accuracy by different cp points for Gini index and cross-entropy
+p = ggplot(df, aes(x=cp, y=accuracy, group=loss)) +
+    geom_line(aes(color=loss))+
+    geom_point(aes(color=loss))
+p
+```
+
+#### The plot of Variable Importance for Decision Tree Model
+```{r}
+plot(varImp(tree_info, cuts=10), cex = 0.3)
+varImpPlot(tree_info, n.var=10)
+```
+
+
+
+```{r}
+# Predict test set and it's confusion matrix
+tree_pred = predict(tree_info, newdata = x_test)
+cm = confusionMatrix(tree_pred, y_test)
+cm
+```
+
+
+### Random Forest
+
+Cross Validation on Random Forest to measure the Accuracy 
+```{r}
+control <- trainControl(method="repeatedcv", number=6)
+seed <- 100
+set.seed(seed)
+metric <- "Accuracy"
+
+start_time <- Sys.time()
+rf_cv <- train(x = x_train , y = y_train, method="rf", metric=metric, trControl=control)
+end_time <- Sys.time()
+end_time - start_time
+
+print(rf_cv)
+```
+
+
+Tuning the paratmeters "mtry" 
+```{r}
+accuracy = numeric(15)
+
+start_time <- Sys.time()
+
+for (mtry in 1:15) {
+  fit = randomForest(x = x_train, y = y_train,importance = TRUE, ntree=100, mtry = mtry)
+  fit.pred = predict(fit, newdata = x_test_scale)
+  accuracy[mtry]=confusionMatrix(fit.pred, y_test, positive='1')$overall[1]
+}
+
+end_time <- Sys.time()
+end_time - start_time
+# Time difference of 3.334319 hours
+```
+
+```{r}
+accuracy=as.data.frame(accuracy)
+accuracy$Variables=1:15
+ggplot(data=accuracy, aes(x=Variables, y=accuracy, colour="red")) +geom_line()
+```
+
+
+Final Predictions with the ntree=500 and mtry=13
+```{r}
+rf = randomForest(x = x_train, y = y_train, importance = TRUE, ntree=500, mtry=13) # subset
+importance(rf)
+varImpPlot(rf)
+```
+
+Final testing 
+```{r}
+rf.test = predict(rf, newdata = x_test)
+confusionMatrix(rf.test, y_test)
+```
+
+```{r}
+varimpdf <- data.frame(Feature=c("Elevation", "Cache la Poudre","Rawah","Horizontal_Distance_To_Roadways","4703 ","8772","8771","Horizontal_Distance_To_Hydrology ","Horizontal_Distance_To_Fire_Points","7201"),
+                 Importance=c(100,40.044,29.099,21.542,16.169,11.673,11.119,11.035,8.299,7.523))
+varimpdf
+```
+
+```{r}
+p<-ggplot(data=varimpdf,
+          aes(x=reorder(Feature, Importance), y=Importance)) +
+   geom_bar(stat="identity") + 
+   theme_minimal() +
+   coord_flip() +
+   xlab("Feature") +
+   ggtitle("Plot of Variable importance for decision tree")
+p
+```
